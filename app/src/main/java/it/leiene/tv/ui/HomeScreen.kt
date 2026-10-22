@@ -1,18 +1,18 @@
 package it.leiene.tv.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -24,6 +24,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -47,6 +50,8 @@ fun HomeScreen(
     episodes: List<EpisodeGroup>,
     isLoading: Boolean,
     isLoadingMore: Boolean,
+    progressVersion: Int,
+    onReportFocused: (VideoReport) -> Unit,
     onLoadMore: () -> Unit,
     onSelectReport: (VideoReport) -> Unit,
     onRefresh: () -> Unit
@@ -57,6 +62,43 @@ fun HomeScreen(
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
     var searchQuery by remember { mutableStateOf("") }
+    // Search field exists only on demand: an always-present TextField took focus at launch
+    // and popped the TV keyboard over the catalog.
+    var searchActive by remember { mutableStateOf(false) }
+    val searchFieldFocusRequester = remember { FocusRequester() }
+    val searchButtonFocusRequester = remember { FocusRequester() }
+    val firstCardFocusRequester = remember { FocusRequester() }
+    var initialFocusDone by remember { mutableStateOf(false) }
+
+    fun closeSearch() {
+        searchQuery = ""
+        searchActive = false
+    }
+
+    BackHandler(enabled = searchActive) {
+        closeSearch()
+        runCatching { searchButtonFocusRequester.requestFocus() }
+    }
+
+    LaunchedEffect(searchActive) {
+        if (searchActive) {
+            withFrameNanos { }
+            runCatching { searchFieldFocusRequester.requestFocus() }
+        }
+    }
+
+    // Land on the first card at launch, not on a control
+    LaunchedEffect(episodes.isNotEmpty()) {
+        if (episodes.isNotEmpty() && !initialFocusDone) {
+            repeat(10) {
+                withFrameNanos { }
+                if (runCatching { firstCardFocusRequester.requestFocus() }.isSuccess) {
+                    initialFocusDone = true
+                    return@LaunchedEffect
+                }
+            }
+        }
+    }
 
     val allReports = remember(episodes) {
         episodes.flatMap { it.reports }.distinctBy { it.id }
@@ -140,36 +182,67 @@ fun HomeScreen(
                     }
                 }
 
-                var refreshFocused by remember { mutableStateOf(false) }
-                Button(
-                    onClick = onRefresh,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (refreshFocused) Color(0xFFFFE600) else Color(0xFF1E222D),
-                        contentColor = if (refreshFocused) Color.Black else Color.White
-                    ),
-                    shape = RoundedCornerShape(8.dp),
-                    border = androidx.compose.foundation.BorderStroke(
-                        width = if (refreshFocused) 2.dp else 1.dp,
-                        color = if (refreshFocused) Color.White else Color(0xFF323846)
-                    ),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                    modifier = Modifier
-                        .onFocusChanged { refreshFocused = it.isFocused }
-                        .focusable()
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Icon(
-                        painter = painterResource(id = R.drawable.ic_refresh),
-                        contentDescription = "Aggiorna",
-                        tint = if (refreshFocused) Color.Black else Color(0xFFFFE600),
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("AGGIORNA", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    var searchFocused by remember { mutableStateOf(false) }
+                    Button(
+                        onClick = { searchActive = true },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (searchFocused || searchActive) Color(0xFFFFE600) else Color(0xFF1E222D),
+                            contentColor = if (searchFocused || searchActive) Color.Black else Color.White
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        border = androidx.compose.foundation.BorderStroke(
+                            width = if (searchFocused) 2.dp else 1.dp,
+                            color = if (searchFocused) Color.White else Color(0xFF323846)
+                        ),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .focusRequester(searchButtonFocusRequester)
+                            .onFocusChanged { searchFocused = it.isFocused }
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_search),
+                            contentDescription = null,
+                            tint = if (searchFocused || searchActive) Color.Black else Color(0xFFFFE600),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("CERCA", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+    
+                    var refreshFocused by remember { mutableStateOf(false) }
+                    Button(
+                        onClick = onRefresh,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (refreshFocused) Color(0xFFFFE600) else Color(0xFF1E222D),
+                            contentColor = if (refreshFocused) Color.Black else Color.White
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        border = androidx.compose.foundation.BorderStroke(
+                            width = if (refreshFocused) 2.dp else 1.dp,
+                            color = if (refreshFocused) Color.White else Color(0xFF323846)
+                        ),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .onFocusChanged { refreshFocused = it.isFocused }
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_refresh),
+                            contentDescription = "Aggiorna",
+                            tint = if (refreshFocused) Color.Black else Color(0xFFFFE600),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("AGGIORNA", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
                 }
             }
 
-            // SEARCH BAR
-            OutlinedTextField(
+            // SEARCH BAR (on demand)
+            if (searchActive) OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
                 placeholder = {
@@ -188,20 +261,22 @@ fun HomeScreen(
                     )
                 },
                 trailingIcon = {
-                    if (searchQuery.isNotBlank()) {
-                        IconButton(onClick = { searchQuery = "" }) {
+                    IconButton(onClick = {
+                        closeSearch()
+                        runCatching { searchButtonFocusRequester.requestFocus() }
+                    }) {
                             Icon(
                                 painter = painterResource(id = R.drawable.ic_clear),
                                 contentDescription = "Cancella ricerca",
                                 tint = Color(0xFFFFE600),
                                 modifier = Modifier.size(18.dp)
                             )
-                        }
                     }
                 },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
+                // Leave the field and jump into the results with the D-pad ready
+                keyboardActions = KeyboardActions(onSearch = { focusManager.moveFocus(FocusDirection.Down) }),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedContainerColor = Color(0xFF181B24),
                     unfocusedContainerColor = Color(0xFF111319),
@@ -214,6 +289,7 @@ fun HomeScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 12.dp)
+                    .focusRequester(searchFieldFocusRequester)
             )
 
             // CONTENT
@@ -244,7 +320,8 @@ fun HomeScreen(
                         items(searchResults, key = { it.id }) { report ->
                             UniformReportCard(
                                 report = report,
-                                savedProgress = progressTracker.getProgress(report.id),
+                                savedProgress = remember(report.id, progressVersion) { progressTracker.getProgress(report.id) },
+                                onFocused = { onReportFocused(report) },
                                 onClick = { onSelectReport(report) }
                             )
                         }
@@ -265,10 +342,13 @@ fun HomeScreen(
                         verticalArrangement = Arrangement.spacedBy(20.dp),
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        items(episodes, key = { it.date }) { episode ->
+                        itemsIndexed(episodes, key = { _, episode -> episode.date }) { index, episode ->
                             EpisodeRowSection(
                                 episode = episode,
                                 progressTracker = progressTracker,
+                                progressVersion = progressVersion,
+                                firstCardFocusRequester = if (index == 0) firstCardFocusRequester else null,
+                                onReportFocused = onReportFocused,
                                 onSelectReport = onSelectReport
                             )
                         }
@@ -308,6 +388,9 @@ fun HomeScreen(
 fun EpisodeRowSection(
     episode: EpisodeGroup,
     progressTracker: PlaybackProgressTracker,
+    progressVersion: Int,
+    firstCardFocusRequester: FocusRequester?,
+    onReportFocused: (VideoReport) -> Unit,
     onSelectReport: (VideoReport) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -344,11 +427,15 @@ fun EpisodeRowSection(
             contentPadding = PaddingValues(vertical = 6.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
-            items(episode.reports, key = { it.id }) { report ->
+            itemsIndexed(episode.reports, key = { _, report -> report.id }) { index, report ->
                 UniformReportCard(
                     report = report,
-                    savedProgress = progressTracker.getProgress(report.id),
-                    onClick = { onSelectReport(report) }
+                    savedProgress = remember(report.id, progressVersion) { progressTracker.getProgress(report.id) },
+                    onFocused = { onReportFocused(report) },
+                    onClick = { onSelectReport(report) },
+                    modifier = if (index == 0 && firstCardFocusRequester != null) {
+                        Modifier.focusRequester(firstCardFocusRequester)
+                    } else Modifier
                 )
             }
         }
@@ -362,7 +449,9 @@ fun EpisodeRowSection(
 fun UniformReportCard(
     report: VideoReport,
     savedProgress: Long,
-    onClick: () -> Unit
+    onFocused: () -> Unit,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     var isFocused by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(
@@ -376,11 +465,14 @@ fun UniformReportCard(
         colors = CardDefaults.cardColors(
             containerColor = if (isFocused) Color(0xFF1E222E) else Color(0xFF13151D)
         ),
-        modifier = Modifier
+        modifier = modifier
             .width(230.dp)
             .height(235.dp) // Fixed height ensures 100% equal dimensions
             .scale(scale)
-            .onFocusChanged { isFocused = it.isFocused }
+            .onFocusChanged {
+                if (it.isFocused && !isFocused) onFocused()
+                isFocused = it.isFocused
+            }
             .border(
                 width = if (isFocused) 3.5.dp else 1.dp,
                 color = if (isFocused) Color(0xFFFFE600) else Color(0xFF232733),
@@ -388,7 +480,6 @@ fun UniformReportCard(
             )
             .clip(RoundedCornerShape(10.dp))
             .clickable { onClick() }
-            .focusable()
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             // FIXED THUMBNAIL (125dp)

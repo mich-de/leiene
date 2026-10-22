@@ -11,7 +11,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -21,12 +20,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -34,6 +30,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
@@ -57,13 +54,14 @@ fun PlayerScreen(
     val context = LocalContext.current
     val progressTracker = remember { PlaybackProgressTracker(context) }
 
+    // Mirrors playWhenReady (user intent), not isPlaying: isPlaying is false while buffering,
+    // which made pause look broken and flipped the icon to "play" during stalls.
     var isPlaying by remember { mutableStateOf(true) }
     var showControls by remember { mutableStateOf(true) }
+    var lastInteraction by remember { mutableLongStateOf(0L) }
     var currentPosition by remember { mutableLongStateOf(initialPositionMs) }
     var totalDuration by remember { mutableLongStateOf(0L) }
     var isBuffering by remember { mutableStateOf(true) }
-
-    val playPauseFocusRequester = remember { FocusRequester() }
 
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
@@ -71,25 +69,25 @@ fun PlayerScreen(
                 .setUri(mpdUrl)
                 .setMimeType(MimeTypes.APPLICATION_MPD)
                 .build()
-            setMediaItem(mediaItem)
-            prepare()
-            if (initialPositionMs > 0) {
-                seekTo(initialPositionMs)
-            }
+            setMediaItem(mediaItem, initialPositionMs.coerceAtLeast(0L))
             playWhenReady = true
+            prepare()
         }
     }
 
     DisposableEffect(Unit) {
         val listener = object : Player.Listener {
-            override fun onIsPlayingChanged(playing: Boolean) {
-                isPlaying = playing
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                isPlaying = playWhenReady
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 isBuffering = (playbackState == Player.STATE_BUFFERING)
                 if (playbackState == Player.STATE_READY) {
                     totalDuration = exoPlayer.duration.coerceAtLeast(0L)
+                }
+                if (playbackState == Player.STATE_ENDED) {
+                    showControls = true
                 }
             }
         }
@@ -103,7 +101,7 @@ fun PlayerScreen(
     }
 
     // Auto update progress and periodic saving
-    LaunchedEffect(isPlaying) {
+    LaunchedEffect(Unit) {
         var tick = 0
         while (true) {
             currentPosition = exoPlayer.currentPosition.coerceAtLeast(0L)
@@ -117,81 +115,82 @@ fun PlayerScreen(
     }
 
     // Controls timeout
-    LaunchedEffect(showControls, isPlaying) {
+    LaunchedEffect(showControls, isPlaying, lastInteraction) {
         if (showControls && isPlaying) {
             delay(5000)
             showControls = false
         }
     }
 
-    LaunchedEffect(Unit) {
-        playPauseFocusRequester.requestFocus()
+    fun revealControls() {
+        showControls = true
+        lastInteraction = System.nanoTime()
     }
 
-    fun togglePlayPause() {
-        if (exoPlayer.isPlaying) {
-            exoPlayer.pause()
-            isPlaying = false
-        } else {
+    fun setPlaying(play: Boolean) {
+        if (play) {
+            // Restart from the beginning if the video already ended
+            if (exoPlayer.playbackState == Player.STATE_ENDED) exoPlayer.seekTo(0L)
             exoPlayer.play()
-            isPlaying = true
+        } else {
+            exoPlayer.pause()
         }
-        showControls = true
+        isPlaying = play
+        revealControls()
     }
+
+    fun togglePlayPause() = setPlaying(!exoPlayer.playWhenReady || exoPlayer.playbackState == Player.STATE_ENDED)
 
     fun seekRelative(deltaMs: Long) {
-        val newPos = (exoPlayer.currentPosition + deltaMs).coerceIn(0L, exoPlayer.duration.coerceAtLeast(0L))
+        val duration = exoPlayer.duration
+        var newPos = (exoPlayer.currentPosition + deltaMs).coerceAtLeast(0L)
+        // Duration is C.TIME_UNSET until the manifest is loaded: do not clamp to it then
+        if (duration != C.TIME_UNSET && duration > 0) newPos = newPos.coerceAtMost(duration)
         exoPlayer.seekTo(newPos)
         currentPosition = newPos
-        showControls = true
+        revealControls()
+    }
+
+    fun handlePlayerKey(event: KeyEvent) {
+        val firstPress = event.repeatCount == 0
+        when (event.keyCode) {
+            KeyEvent.KEYCODE_MEDIA_PAUSE -> setPlaying(false)
+            KeyEvent.KEYCODE_MEDIA_PLAY -> setPlaying(true)
+            KeyEvent.KEYCODE_DPAD_LEFT,
+            KeyEvent.KEYCODE_MEDIA_REWIND -> seekRelative(-10000L)
+            KeyEvent.KEYCODE_DPAD_RIGHT,
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> seekRelative(10000L)
+            KeyEvent.KEYCODE_DPAD_UP,
+            KeyEvent.KEYCODE_DPAD_DOWN -> revealControls()
+            // Holding OK must not toggle repeatedly
+            else -> if (firstPress) togglePlayPause()
+        }
     }
 
     DisposableEffect(Unit) {
+        // Single owner of remote keys while the player is shown (Activity.dispatchKeyEvent).
+        // BACK is left to BackHandler.
         registerKeyHandler { event ->
-            if (event.action == KeyEvent.ACTION_DOWN) {
-                when (event.keyCode) {
-                    KeyEvent.KEYCODE_DPAD_CENTER,
-                    KeyEvent.KEYCODE_ENTER,
-                    KeyEvent.KEYCODE_NUMPAD_ENTER,
-                    KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
-                        togglePlayPause()
-                        true
-                    }
-                    KeyEvent.KEYCODE_MEDIA_PAUSE -> {
-                        exoPlayer.pause()
-                        isPlaying = false
-                        showControls = true
-                        true
-                    }
-                    KeyEvent.KEYCODE_MEDIA_PLAY -> {
-                        exoPlayer.play()
-                        isPlaying = true
-                        showControls = true
-                        true
-                    }
-                    KeyEvent.KEYCODE_DPAD_LEFT,
-                    KeyEvent.KEYCODE_MEDIA_REWIND -> {
-                        seekRelative(-10000L)
-                        true
-                    }
-                    KeyEvent.KEYCODE_DPAD_RIGHT,
-                    KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
-                        seekRelative(10000L)
-                        true
-                    }
-                    KeyEvent.KEYCODE_DPAD_UP,
-                    KeyEvent.KEYCODE_DPAD_DOWN -> {
-                        showControls = true
-                        true
-                    }
-                    KeyEvent.KEYCODE_BACK -> {
-                        progressTracker.saveProgress(report.id, exoPlayer.currentPosition, exoPlayer.duration)
-                        onBack()
-                        true
-                    }
-                    else -> false
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_CENTER,
+                KeyEvent.KEYCODE_ENTER,
+                KeyEvent.KEYCODE_NUMPAD_ENTER,
+                KeyEvent.KEYCODE_SPACE,
+                KeyEvent.KEYCODE_BUTTON_A,
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                KeyEvent.KEYCODE_MEDIA_PAUSE,
+                KeyEvent.KEYCODE_MEDIA_PLAY,
+                KeyEvent.KEYCODE_DPAD_LEFT,
+                KeyEvent.KEYCODE_MEDIA_REWIND,
+                KeyEvent.KEYCODE_DPAD_RIGHT,
+                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
+                KeyEvent.KEYCODE_DPAD_UP,
+                KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    if (event.action == KeyEvent.ACTION_DOWN) handlePlayerKey(event)
+                    true // consume UP too, so focused views never see a half key press
                 }
-            } else false
+                else -> false
+            }
         }
         onDispose {
             registerKeyHandler(null)
@@ -207,39 +206,6 @@ fun PlayerScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .onKeyEvent { keyEvent ->
-                if (keyEvent.type == KeyEventType.KeyDown) {
-                    showControls = true
-                    when (keyEvent.nativeKeyEvent.keyCode) {
-                        KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                            if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-                            true
-                        }
-                        KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MEDIA_REWIND -> {
-                            val newPos = (exoPlayer.currentPosition - 10000L).coerceAtLeast(0L)
-                            exoPlayer.seekTo(newPos)
-                            currentPosition = newPos
-                            true
-                        }
-                        KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
-                            val newPos = (exoPlayer.currentPosition + 10000L).coerceAtMost(exoPlayer.duration)
-                            exoPlayer.seekTo(newPos)
-                            currentPosition = newPos
-                            true
-                        }
-                        KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
-                            if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-                            true
-                        }
-                        KeyEvent.KEYCODE_BACK -> {
-                            progressTracker.saveProgress(report.id, exoPlayer.currentPosition, exoPlayer.duration)
-                            onBack()
-                            true
-                        }
-                        else -> false
-                    }
-                } else false
-            }
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null
@@ -325,7 +291,6 @@ fun PlayerScreen(
                                     shape = CircleShape
                                 )
                                 .onFocusChanged { backFocused = it.isFocused }
-                                .focusable()
                         ) {
                             Icon(
                                 painter = painterResource(id = R.drawable.ic_arrow_back),
@@ -449,11 +414,7 @@ fun PlayerScreen(
                             // Replay 10s (Row 6, col 4 icon)
                             var rewFocused by remember { mutableStateOf(false) }
                             IconButton(
-                                onClick = {
-                                    val newPos = (exoPlayer.currentPosition - 10000L).coerceAtLeast(0L)
-                                    exoPlayer.seekTo(newPos)
-                                    currentPosition = newPos
-                                },
+                                onClick = { seekRelative(-10000L) },
                                 modifier = Modifier
                                     .size(54.dp)
                                     .background(
@@ -466,7 +427,6 @@ fun PlayerScreen(
                                         shape = CircleShape
                                     )
                                     .onFocusChanged { rewFocused = it.isFocused }
-                                    .focusable()
                             ) {
                                 Icon(
                                     painter = painterResource(id = R.drawable.ic_player_replay_10),
@@ -479,19 +439,15 @@ fun PlayerScreen(
                             // Big Center Play / Pause (Row 1/2 circle filled icon)
                             var playFocused by remember { mutableStateOf(false) }
                             IconButton(
-                                onClick = {
-                                    if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-                                },
+                                onClick = { togglePlayPause() },
                                 modifier = Modifier
                                     .size(72.dp)
-                                    .focusRequester(playPauseFocusRequester)
                                     .border(
                                         width = if (playFocused) 4.dp else 0.dp,
                                         color = Color.White,
                                         shape = CircleShape
                                     )
                                     .onFocusChanged { playFocused = it.isFocused }
-                                    .focusable()
                             ) {
                                 Icon(
                                     painter = painterResource(
@@ -506,11 +462,7 @@ fun PlayerScreen(
                             // Forward 10s (Row 6, col 5 icon)
                             var ffFocused by remember { mutableStateOf(false) }
                             IconButton(
-                                onClick = {
-                                    val newPos = (exoPlayer.currentPosition + 10000L).coerceAtMost(exoPlayer.duration)
-                                    exoPlayer.seekTo(newPos)
-                                    currentPosition = newPos
-                                },
+                                onClick = { seekRelative(10000L) },
                                 modifier = Modifier
                                     .size(54.dp)
                                     .background(
@@ -523,7 +475,6 @@ fun PlayerScreen(
                                         shape = CircleShape
                                     )
                                     .onFocusChanged { ffFocused = it.isFocused }
-                                    .focusable()
                             ) {
                                 Icon(
                                     painter = painterResource(id = R.drawable.ic_player_forward_10),

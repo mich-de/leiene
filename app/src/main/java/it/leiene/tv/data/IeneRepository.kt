@@ -7,6 +7,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 
@@ -21,29 +22,33 @@ class IeneRepository(private val context: Context) {
     private val mpdPattern = Pattern.compile("src=[\"'](https?://[^\\s\"']+\\.mpd)[\"']")
     private val descPattern = Pattern.compile("<meta\\s+name=[\"']description[\"']\\s+content=[\"']([^\"']+)[\"']", Pattern.CASE_INSENSITIVE)
 
+    // Resolved reports (guid + mpd) survive for the app session, so re-opening a video is instant.
+    private val resolvedCache = ConcurrentHashMap<String, VideoReport>()
+    private val archive by lazy { loadArchiveFromAssets() }
+    private val archiveById by lazy { archive.flatMap { it.reports }.associateBy { it.id } }
+
+    /** Bundled offline archive: shown instantly while the live list loads. */
+    suspend fun getCachedEpisodes(): List<EpisodeGroup> = withContext(Dispatchers.IO) { archive }
+
+    /** Live episodes page; empty on network failure. */
     suspend fun getEpisodes(page: Int = 0): List<EpisodeGroup> = withContext(Dispatchers.IO) {
-        if (page == 0) {
-            val cached = loadArchiveFromAssets()
-            try {
-                val live = fetchLiveEpisodesPage(0)
-                if (live.isNotEmpty()) {
-                    return@withContext live
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
+        try {
+            fetchLiveEpisodesPage(page).map { group ->
+                group.copy(reports = group.reports.map(::enrich))
             }
-            return@withContext cached
-        } else {
-            try {
-                return@withContext fetchLiveEpisodesPage(page)
-            } catch (e: Exception) {
-                e.printStackTrace()
-                return@withContext emptyList()
-            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            emptyList()
         }
     }
 
-    fun loadArchiveFromAssets(): List<EpisodeGroup> {
+    private fun enrich(report: VideoReport): VideoReport {
+        resolvedCache[report.id]?.let { return it }
+        val cached = archiveById[report.id] ?: return report
+        return if (report.description.isBlank()) report.copy(description = cached.description) else report
+    }
+
+    private fun loadArchiveFromAssets(): List<EpisodeGroup> {
         val groups = mutableListOf<EpisodeGroup>()
         try {
             val jsonString = context.assets.open("servizi_iene_archive.json").bufferedReader().use { it.readText() }
@@ -91,10 +96,10 @@ class IeneRepository(private val context: Context) {
             .header("User-Agent", "Mozilla/5.0 (Linux; Android 14)")
             .build()
 
-        val response = client.newCall(request).execute()
-        if (!response.isSuccessful) return emptyList()
-
-        val body = response.body?.string() ?: return emptyList()
+        val body = client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) return emptyList()
+            response.body?.string()
+        } ?: return emptyList()
         val root = JSONObject(body)
         val contentArray = root.optJSONArray("content") ?: return emptyList()
 
@@ -143,6 +148,7 @@ class IeneRepository(private val context: Context) {
     }
 
     suspend fun resolveReportDetails(report: VideoReport): VideoReport = withContext(Dispatchers.IO) {
+        resolvedCache[report.id]?.let { return@withContext it }
         var guid = report.guid
         var description = report.description
         var mpdUrl = report.mpdUrl
@@ -153,8 +159,7 @@ class IeneRepository(private val context: Context) {
                     .url(report.pageUrl)
                     .header("User-Agent", "Mozilla/5.0 (Linux; Android 14)")
                     .build()
-                val pageResp = client.newCall(pageReq).execute()
-                val pageBody = pageResp.body?.string() ?: ""
+                val pageBody = client.newCall(pageReq).execute().use { it.body?.string() } ?: ""
 
                 if (guid.isNullOrBlank()) {
                     val matcher = guidPattern.matcher(pageBody)
@@ -181,8 +186,7 @@ class IeneRepository(private val context: Context) {
                     .url(smilUrl)
                     .header("User-Agent", "Mozilla/5.0")
                     .build()
-                val smilResp = client.newCall(smilReq).execute()
-                val smilBody = smilResp.body?.string() ?: ""
+                val smilBody = client.newCall(smilReq).execute().use { it.body?.string() } ?: ""
 
                 val mpdMatcher = mpdPattern.matcher(smilBody)
                 val candidates = mutableListOf<String>()
@@ -204,10 +208,12 @@ class IeneRepository(private val context: Context) {
             }
         }
 
-        return@withContext report.copy(
+        val resolved = report.copy(
             guid = guid,
             description = description,
             mpdUrl = mpdUrl
         )
+        if (!mpdUrl.isNullOrBlank()) resolvedCache[report.id] = resolved
+        return@withContext resolved
     }
 }

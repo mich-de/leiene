@@ -7,7 +7,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -21,6 +20,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.lifecycleScope
 import it.leiene.tv.data.EpisodeGroup
 import it.leiene.tv.data.IeneRepository
@@ -28,6 +29,8 @@ import it.leiene.tv.data.PlaybackProgressTracker
 import it.leiene.tv.data.VideoReport
 import it.leiene.tv.player.PlayerScreen
 import it.leiene.tv.player.formatTime
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -64,6 +67,10 @@ class MainActivity : ComponentActivity() {
             var pendingMpdUrl by remember { mutableStateOf<String?>(null) }
             var pendingSavedPos by remember { mutableLongStateOf(0L) }
 
+            // Bumped when the player closes so cards re-read their resume progress
+            var progressVersion by remember { mutableIntStateOf(0) }
+            var prefetchJob by remember { mutableStateOf<Job?>(null) }
+
             fun startPlayback(report: VideoReport, mpd: String, pos: Long) {
                 selectedReport = report
                 activeMpdUrl = mpd
@@ -85,8 +92,14 @@ class MainActivity : ComponentActivity() {
                 isLoading = true
                 currentPage = 0
                 lifecycleScope.launch {
-                    val list = repository.getEpisodes(0)
-                    episodes = list
+                    // Show the bundled archive immediately, then swap in the live list
+                    if (episodes.isEmpty()) {
+                        episodes = repository.getCachedEpisodes()
+                    }
+                    val live = repository.getEpisodes(0)
+                    if (live.isNotEmpty()) {
+                        episodes = live
+                    }
                     isLoading = false
                 }
             }
@@ -122,6 +135,50 @@ class MainActivity : ComponentActivity() {
                         .fillMaxSize()
                         .background(Color(0xFF090A0E))
                 ) {
+                    // Home stays composed under the player: back returns to the same row, scroll and focus
+                    HomeScreen(
+                        episodes = episodes,
+                        isLoading = isLoading,
+                        isLoadingMore = isLoadingMore,
+                        progressVersion = progressVersion,
+                        onReportFocused = { report ->
+                            // Resolve the stream while the user hovers a card, so OK starts playback at once
+                            prefetchJob?.cancel()
+                            if (report.mpdUrl.isNullOrBlank()) {
+                                prefetchJob = lifecycleScope.launch {
+                                    delay(600)
+                                    repository.resolveReportDetails(report)
+                                }
+                            }
+                        },
+                        onLoadMore = {
+                            loadNextPage()
+                        },
+                        onSelectReport = { report ->
+                            if (!report.mpdUrl.isNullOrBlank()) {
+                                handleReportSelection(report, report.mpdUrl)
+                            } else {
+                                isResolvingMpd = true
+                                lifecycleScope.launch {
+                                    val detailed = repository.resolveReportDetails(report)
+                                    isResolvingMpd = false
+                                    if (!detailed.mpdUrl.isNullOrBlank()) {
+                                        handleReportSelection(detailed, detailed.mpdUrl)
+                                    } else {
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            "Impossibile avviare lo streaming del servizio",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                }
+                            }
+                        },
+                        onRefresh = {
+                            loadInitial()
+                        }
+                    )
+
                     if (selectedReport != null && activeMpdUrl != null) {
                         PlayerScreen(
                             report = selectedReport!!,
@@ -131,42 +188,10 @@ class MainActivity : ComponentActivity() {
                                 selectedReport = null
                                 activeMpdUrl = null
                                 startPositionMs = 0L
+                                progressVersion++
                             },
                             registerKeyHandler = { handler ->
                                 onKeyEventListener = handler
-                            }
-                        )
-                    } else {
-                        onKeyEventListener = null
-                        HomeScreen(
-                            episodes = episodes,
-                            isLoading = isLoading,
-                            isLoadingMore = isLoadingMore,
-                            onLoadMore = {
-                                loadNextPage()
-                            },
-                            onSelectReport = { report ->
-                                if (!report.mpdUrl.isNullOrBlank()) {
-                                    handleReportSelection(report, report.mpdUrl)
-                                } else {
-                                    isResolvingMpd = true
-                                    lifecycleScope.launch {
-                                        val detailed = repository.resolveReportDetails(report)
-                                        isResolvingMpd = false
-                                        if (!detailed.mpdUrl.isNullOrBlank()) {
-                                            handleReportSelection(detailed, detailed.mpdUrl)
-                                        } else {
-                                            Toast.makeText(
-                                                this@MainActivity,
-                                                "Impossibile avviare lo streaming del servizio",
-                                                Toast.LENGTH_LONG
-                                            ).show()
-                                        }
-                                    }
-                                }
-                            },
-                            onRefresh = {
-                                loadInitial()
                             }
                         )
                     }
@@ -177,23 +202,26 @@ class MainActivity : ComponentActivity() {
                         val mpd = pendingMpdUrl!!
                         val pos = pendingSavedPos
                         val resumeFocusRequester = remember { FocusRequester() }
-
-                        LaunchedEffect(Unit) {
-                            resumeFocusRequester.requestFocus()
+                        val dismissResume = {
+                            pendingResumeReport = null
+                            pendingMpdUrl = null
                         }
 
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(Color.Black.copy(alpha = 0.82f)),
-                            contentAlignment = Alignment.Center
+                        // Own window: buttons get real focus, BACK dismisses, focus returns to the card
+                        Dialog(
+                            onDismissRequest = dismissResume,
+                            properties = DialogProperties(usePlatformDefaultWidth = false)
                         ) {
+                            LaunchedEffect(Unit) {
+                                withFrameNanos { }
+                                runCatching { resumeFocusRequester.requestFocus() }
+                            }
                             Surface(
                                 shape = RoundedCornerShape(16.dp),
                                 color = Color(0xFF161922),
                                 border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFF323A4A)),
                                 modifier = Modifier
-                                    .width(440.dp)
+                                    .widthIn(max = 440.dp)
                                     .padding(24.dp)
                             ) {
                                 Column(
@@ -233,8 +261,7 @@ class MainActivity : ComponentActivity() {
                                     var resumeFocused by remember { mutableStateOf(false) }
                                     Button(
                                         onClick = {
-                                            pendingResumeReport = null
-                                            pendingMpdUrl = null
+                                            dismissResume()
                                             startPlayback(report, mpd, pos)
                                         },
                                         colors = ButtonDefaults.buttonColors(
@@ -251,7 +278,6 @@ class MainActivity : ComponentActivity() {
                                             .height(48.dp)
                                             .focusRequester(resumeFocusRequester)
                                             .onFocusChanged { resumeFocused = it.isFocused }
-                                            .focusable()
                                     ) {
                                         Text("▶ RIPRENDI DA ${formatTime(pos)}", fontWeight = FontWeight.Black, fontSize = 14.sp)
                                     }
@@ -263,8 +289,7 @@ class MainActivity : ComponentActivity() {
                                     OutlinedButton(
                                         onClick = {
                                             progressTracker.clearProgress(report.id)
-                                            pendingResumeReport = null
-                                            pendingMpdUrl = null
+                                            dismissResume()
                                             startPlayback(report, mpd, 0L)
                                         },
                                         shape = RoundedCornerShape(10.dp),
@@ -280,7 +305,6 @@ class MainActivity : ComponentActivity() {
                                             .fillMaxWidth()
                                             .height(46.dp)
                                             .onFocusChanged { restartFocused = it.isFocused }
-                                            .focusable()
                                     ) {
                                         Text("↺ RICOMINCIA DALL'INIZIO", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                                     }
