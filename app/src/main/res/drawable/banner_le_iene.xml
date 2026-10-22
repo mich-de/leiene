@@ -1,0 +1,30 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+    <!-- Deep Black Background -->
+    <path
+        android:fillColor="#0A0B0E"
+        android:pathData="M0,0 h320 v180 h-320 Z" />
+    <!-- Yellow Subtle Bottom Stripe -->
+    <path
+        android:fillColor="#FFE600"
+        android:pathData="M0,172 h320 v8 h-320 Z" />
+    <!-- Sunglasses Silhouette Left -->
+    <path
+        android:fillColor="#FFE600"
+        android:pathData="M80,68 L140,68 C140,86 132,96 110,96 C90,96 80,86 80,68 Z" />
+    <!-- Sunglasses Silhouette Right -->
+    <path
+        android:fillColor="#FFE600"
+        android:pathData="M160,68 L220,68 C220,86 212,96 190,96 C170,96 160,86 160,68 Z" />
+    <path
+        android:strokeColor="#FFE600"
+        android:strokeWidth="5"
+        android:pathData="M76,64 L224,64" />
+    <!-- Tie -->
+    <path
+        android:fillColor="#FFE600"
+        android:pathData="M142,108 L158,108 L163,142 L150,154 L137,142 Z" />
+</vector>

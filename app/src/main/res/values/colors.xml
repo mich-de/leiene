@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#000000</color>
+    <color name="bg_main">#0A0B0E</color>
+    <color name="bg_card">#14171E</color>
+    <color name="bg_card_focused">#20242E</color>
+    <color name="iene_yellow">#FFE600</color>
+    <color name="iene_yellow_dark">#D4BE00</color>
+    <color name="white">#FFFFFF</color>
+    <color name="text_muted">#9E9EA7</color>
+    <color name="border_subtle">#222630</color>
+</resources>

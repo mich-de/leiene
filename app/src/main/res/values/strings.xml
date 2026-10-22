@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">Le Iene</string>
+    <string name="title_servizi_oggi">Servizi di Oggi</string>
+    <string name="title_tutti_servizi">Tutti i Servizi</string>
+    <string name="play_video">Riproduci</string>
+    <string name="back">Indietro</string>
+    <string name="refresh">Aggiorna</string>
+    <string name="inviato">Inviato</string>
+    <string name="error_loading">Impossibile caricare i servizi</string>
+</resources>
