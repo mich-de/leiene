@@ -1,6 +1,7 @@
 package it.leiene.tv.ui
 
 import android.os.Bundle
+import android.view.KeyEvent
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -33,6 +34,14 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var repository: IeneRepository
     private lateinit var progressTracker: PlaybackProgressTracker
+    var onKeyEventListener: ((KeyEvent) -> Boolean)? = null
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (onKeyEventListener?.invoke(event) == true) {
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -122,9 +131,13 @@ class MainActivity : ComponentActivity() {
                                 selectedReport = null
                                 activeMpdUrl = null
                                 startPositionMs = 0L
+                            },
+                            registerKeyHandler = { handler ->
+                                onKeyEventListener = handler
                             }
                         )
                     } else {
+                        onKeyEventListener = null
                         HomeScreen(
                             episodes = episodes,
                             isLoading = isLoading,

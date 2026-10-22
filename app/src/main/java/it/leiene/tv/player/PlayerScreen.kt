@@ -51,7 +51,8 @@ fun PlayerScreen(
     report: VideoReport,
     mpdUrl: String,
     initialPositionMs: Long = 0L,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    registerKeyHandler: ((KeyEvent) -> Boolean)? -> Unit = {}
 ) {
     val context = LocalContext.current
     val progressTracker = remember { PlaybackProgressTracker(context) }
@@ -125,6 +126,76 @@ fun PlayerScreen(
 
     LaunchedEffect(Unit) {
         playPauseFocusRequester.requestFocus()
+    }
+
+    fun togglePlayPause() {
+        if (exoPlayer.isPlaying) {
+            exoPlayer.pause()
+            isPlaying = false
+        } else {
+            exoPlayer.play()
+            isPlaying = true
+        }
+        showControls = true
+    }
+
+    fun seekRelative(deltaMs: Long) {
+        val newPos = (exoPlayer.currentPosition + deltaMs).coerceIn(0L, exoPlayer.duration.coerceAtLeast(0L))
+        exoPlayer.seekTo(newPos)
+        currentPosition = newPos
+        showControls = true
+    }
+
+    DisposableEffect(Unit) {
+        registerKeyHandler { event ->
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                when (event.keyCode) {
+                    KeyEvent.KEYCODE_DPAD_CENTER,
+                    KeyEvent.KEYCODE_ENTER,
+                    KeyEvent.KEYCODE_NUMPAD_ENTER,
+                    KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+                        togglePlayPause()
+                        true
+                    }
+                    KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                        exoPlayer.pause()
+                        isPlaying = false
+                        showControls = true
+                        true
+                    }
+                    KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                        exoPlayer.play()
+                        isPlaying = true
+                        showControls = true
+                        true
+                    }
+                    KeyEvent.KEYCODE_DPAD_LEFT,
+                    KeyEvent.KEYCODE_MEDIA_REWIND -> {
+                        seekRelative(-10000L)
+                        true
+                    }
+                    KeyEvent.KEYCODE_DPAD_RIGHT,
+                    KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+                        seekRelative(10000L)
+                        true
+                    }
+                    KeyEvent.KEYCODE_DPAD_UP,
+                    KeyEvent.KEYCODE_DPAD_DOWN -> {
+                        showControls = true
+                        true
+                    }
+                    KeyEvent.KEYCODE_BACK -> {
+                        progressTracker.saveProgress(report.id, exoPlayer.currentPosition, exoPlayer.duration)
+                        onBack()
+                        true
+                    }
+                    else -> false
+                }
+            } else false
+        }
+        onDispose {
+            registerKeyHandler(null)
+        }
     }
 
     BackHandler {
