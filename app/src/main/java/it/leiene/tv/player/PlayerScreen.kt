@@ -52,7 +52,7 @@ fun PlayerScreen(
     mpdUrl: String,
     initialPositionMs: Long = 0L,
     onBack: () -> Unit,
-    registerKeyHandler: ((KeyEvent) -> Boolean)? -> Unit = {}
+    registerKeyHandler: (((KeyEvent) -> Boolean)?) -> Unit = {}
 ) {
     val context = LocalContext.current
     val progressTracker = remember { PlaybackProgressTracker(context) }
